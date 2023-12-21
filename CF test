@@ -1,394 +1,353 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: >-
-  Create a policy that enables Intelligence to access logs, it's a mandatory
-  permission for Intelligence to be able to provide enrichment and insights.
+Description: Testdata Create
+#キーの設定
 Parameters:
-  IntelligenceSubscriptionEndpoint:
-    Description: >-
-      ARN to a resource in the Intelligence instance AWS AccountId that is the
-      subscription endpoint
-    Type: String
-    Default: arn:aws:sqs:us-east-1:454849721154:sns-validator-CloudTrail-input-queue
+  KeyName: 
+    Description : Name of an existing EC2 KeyPair.
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription : Can contain only ASCII characters.
+
+#----------#
+#VPC構築
+#----------#
+
 Resources:
-  NewSnsTopic0:
-    Type: AWS::SNS::Topic
+#VPC作成
+  MyFirstVPC:
+    Type: AWS::EC2::VPC
     Properties:
-      TopicName: CG-Intelligence-Log-Delivery-61025
-    DeletionPolicy: Retain
-  NewSnsTopicPolicy0:
-    Type: AWS::SNS::TopicPolicy
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      InstanceTenancy: default
+      Tags:
+      -
+
+- Key: Name
+        Value: CF-VPC
+
+#ルートテーブル作成
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
     Properties:
-      Topics:
-        - Ref: NewSnsTopic0
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Sid: AllowLogBucketToSendNotifications
-            Effect: Allow
-            Action: sns:Publish
-            Principal:
-              Service:
-                - s3.amazonaws.com
-            Condition:
-              StringEquals:
-                aws:SourceAccount: '414885923185'
-            Resource:
-              Ref: NewSnsTopic0
-          - Sid: AllowOnlyIntelligenceSubscription
-            Effect: Allow
-            Action: sns:Subscribe
-            Principal:
-              Service: sqs.amazonaws.com
-            Condition:
-              ForAnyValue:StringEquals:
-                sns:Endpoint:
-                  - >-
-                    arn:aws:sqs:us-east-1:454849721154:sns-validator-CloudTrail-input-queue
-                  - >-
-                    arn:aws:sqs:us-east-1:454849721154:sns-validator-FlowLogs-input-queue
-                  - >-
-                    arn:aws:sqs:us-east-1:454849721154:sns-validator-GuardDuty-input-queue
-              StringEquals:
-                sns:Protocol: sqs
-            Resource:
-              Ref: NewSnsTopic0
-    DeletionPolicy: Retain
-  NewSnsTopicSubscription0:
-    Type: AWS::SNS::Subscription
+      VpcId: !Ref MyFirstVPC
+      Tags:
+      - Key: Name
+        Value: CF-VPC-PublicRT
+
+#パブリックサブネット1A作成
+  PublicSubnet1A:
+    Type: AWS::EC2::Subnet
     Properties:
-      Endpoint:
-        Ref: IntelligenceSubscriptionEndpoint
-      Protocol: sqs
-      TopicArn:
-        Ref: NewSnsTopic0
-    DependsOn:
-      - NewSnsTopicPolicy0
-  PutBucketNotificationLambdaRole:
-    Type: AWS::IAM::Role
+      VpcId: !Ref MyFirstVPC
+      CidrBlock: 10.0.0.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: "ap-northeast-1a"
+      Tags:
+      - Key: Name
+        Value: CF-publicsubnet-1a
+#パブリックサブネット1C作成
+  PublicSubnet1C:
+    Type: AWS::EC2::Subnet
     Properties:
-      RoleName:
-        Fn::Sub:
-          - CloudGuard-Intelligence-AWS_Lambda_Role-${UniqueSuffix}
-          - UniqueSuffix:
-              Fn::Select:
-                - 0
-                - Fn::Split:
-                    - '-'
-                    - Fn::Select:
-                        - 2
-                        - Fn::Split:
-                            - /
-                            - Ref: AWS::StackId
-      AssumeRolePolicyDocument:
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service:
-                - lambda.amazonaws.com
-            Action:
-              - sts:AssumeRole
-  PutBucketNotificationLambda:
-    Type: AWS::Lambda::Function
+      VpcId: !Ref MyFirstVPC
+      CidrBlock: 10.0.2.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: "ap-northeast-1c"
+      Tags:
+      - Key: Name
+        Value: CF-publicsubnet-1c
+
+#プライベートサブネット1a作成
+  PrivateSubnet1A:
+    Type: AWS::EC2::Subnet
     Properties:
-      FunctionName:
-        Fn::Sub:
-          - CloudGuard-Intelligence-AWS_Lambda-${UniqueSuffix}
-          - UniqueSuffix:
-              Fn::Select:
-                - 0
-                - Fn::Split:
-                    - '-'
-                    - Fn::Select:
-                        - 2
-                        - Fn::Split:
-                            - /
-                            - Ref: AWS::StackId
-      Handler: index.handler
-      Role:
-        Fn::GetAtt:
-          - PutBucketNotificationLambdaRole
-          - Arn
-      Runtime: nodejs14.x
-      Timeout: 300
-      ReservedConcurrentExecutions: 1
-      Code:
-        ZipFile: >-
-          const AWS = require('aws-sdk');
+      VpcId: !Ref MyFirstVPC
+      CidrBlock: 10.0.3.0/24
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: "ap-northeast-1a"
+      Tags:
+      - Key: Name
+        Value: CF-privatesubnet-1a
 
-          const https = require('https');
-
-          const url = require('url');
-
-
-          const getCftResponseBody = (event, context, responseStatus,
-          reasonDetails) => {
-              return JSON.stringify({
-                  Status: responseStatus,
-                  Reason: reasonDetails,
-                  PhysicalResourceId: context.logStreamName,
-                  StackId: event.StackId,
-                  RequestId: event.RequestId,
-                  LogicalResourceId: event.LogicalResourceId
-              });
-          };
-
-
-
-          const getCftResponseOptions = (responseUrl, contentLength) => {
-              const parsedUrl = new url.URL(responseUrl);
-              return {
-                  hostname: parsedUrl.hostname,
-                  port: 443,
-                  path: parsedUrl.pathname + parsedUrl.search,
-                  method: 'PUT',
-                  headers: {
-                      'content-type': '',
-                      'content-length': contentLength
-                  }
-              };
-          };
-
-
-
-          const sendCftResponse = async (event, context, responseStatus,
-          reasonDetails = '') => {
-              return new Promise((resolve, reject) => {
-
-                  const responseBody = getCftResponseBody(event, context, responseStatus, reasonDetails);
-                  const options = getCftResponseOptions(event.ResponseURL, responseBody.length);
-
-                  console.log(`Sending response to Cloudformation. options=${JSON.stringify(options)}, responseBody=${responseBody}`);
-
-                  const req = https.request(options, res => {
-                      console.log(`Status Code: ${res.statusCode}`);
-                      console.log(`Status Message: ${res.statusMessage}`);
-                      context.done();
-                  });
-                  req.on('error', error => {
-                      console.error(`Error caught while trying to send response to CloudFormation. Error=${error}`);
-                      context.done();
-                  });
-                  req.write(responseBody);
-                  req.end();
-              });
-          };
-
-
-
-          const parseRegex = (prefixValue, regex) => {
-              const result = prefixValue.split(regex);
-              if (result.length === 3) {
-                  return result[1];
-              }
-              return false;
-          };
-
-
-
-          const generateEventNotificationId = (prefixValue) => {
-              const currentTimeStamp = new Date().getTime();
-              if (prefixValue === '') {
-                  return `CloudGuard_Intelligence_${currentTimeStamp}`;
-              }
-
-              const cloudtrailRegex = /AWSLogs\/(.*?)\/CloudTrail/;
-              const flowlogsRegex = /AWSLogs\/(.*?)\/vpcflowlogs/;
-
-              const accountIdFromCloudTrailRegex = parseRegex(prefixValue, cloudtrailRegex);
-              if (accountIdFromCloudTrailRegex) return `cloudtrail_${accountIdFromCloudTrailRegex}_${currentTimeStamp}`;
-
-              const accountIdFromFlowLogsRegex = parseRegex(prefixValue, flowlogsRegex);
-              if (accountIdFromFlowLogsRegex) return `flowlogs_${accountIdFromFlowLogsRegex}_${currentTimeStamp}`;
-
-              console.warn(`Prefix: ${prefixValue} does not match cloudtrail/flowlogs paths.`);
-              return `${currentTimeStamp}`;
-          };
-
-
-
-          const generateEventNotification = (TopicArn, prefixValue) => {
-              return {
-                  Id: generateEventNotificationId(prefixValue),
-                  TopicArn,
-                  Events: ['s3:ObjectCreated:Put'],
-                  Filter: {
-                      Key: {
-                          FilterRules: [
-                              {
-                                  Name: 'prefix',
-                                  Value: prefixValue
-                              }
-                          ]
-                      }
-                  }
-              };
-          };
-
-
-
-          const isNotificationFilterRelevant = (filterRule, prefixValue) => {
-              return filterRule.Name.toLowerCase() === 'prefix' && (filterRule.Value.startsWith(prefixValue) || prefixValue.startsWith(filterRule.Value));
-          };
-
-
-
-          const doestNotificationAlreadyExist = (topicConfigurations, TopicArn,
-          prefixValue) => {
-              return topicConfigurations.some((configuration) => {
-                  const isRelevantEventTypes = configuration.Events.some(event => event === 's3:ObjectCreated:*' || event === 's3:ObjectCreated:Put');
-                  if (!isRelevantEventTypes) {
-                      return false;
-                  }
-                  const prefixMatch = configuration.Filter.Key.FilterRules.some(filterRule => isNotificationFilterRelevant(filterRule, prefixValue));
-                  if (!prefixMatch) {
-                      return false;
-                  }
-                  if (configuration.TopicArn !== TopicArn) {
-                      console.warn('Required notification prefix is occupied, PutBucketNotificationConfiguration will fail.');
-                      return true;
-                  }
-                  return true;
-              });
-          };
-
-
-
-          const getPutBucketNotificationsRequest = (Bucket, ExpectedBucketOwner,
-          resp, newNotification) => {
-              return {
-                  Bucket,
-                  ExpectedBucketOwner,
-                  NotificationConfiguration: {
-                      TopicConfigurations: [...resp.TopicConfigurations, newNotification],
-                      QueueConfigurations: resp.QueueConfigurations,
-                      LambdaFunctionConfigurations: resp.LambdaFunctionConfigurations
-                  }
-              };
-          };
-
-
-
-          const addPutEventNotification = async (S3, ExpectedBucketOwner,
-          Bucket, prefixValue, TopicArn) => {
-              const resp = await S3.getBucketNotificationConfiguration({ Bucket, ExpectedBucketOwner }).promise();
-              if (doestNotificationAlreadyExist(resp.TopicConfigurations, TopicArn, prefixValue)) {
-                  console.warn('Notification already exists');
-                  return;
-              }
-              const newNotification = generateEventNotification(TopicArn, prefixValue);
-              const params = getPutBucketNotificationsRequest(Bucket, ExpectedBucketOwner, resp, newNotification);
-              await S3.putBucketNotificationConfiguration(params).promise();
-          };
-
-
-
-          exports.handler = async function (event, context) {
-              console.log(`Started with event=${JSON.stringify(event)}`);
-
-              if (event.RequestType === 'Delete') {
-                  await sendCftResponse(event, context, 'SUCCESS');
-                  return;
-              }
-
-              let errors = [];
-              const S3 = new AWS.S3({apiVersion: '2006-03-01', region: event.ResourceProperties.Region});
-              for (const configuration of event.ResourceProperties.Configurations) {
-                  try {
-                      await addPutEventNotification(S3, event.ResourceProperties.AccountId, configuration.Bucket, configuration.Prefix, configuration.TopicArn);
-                      console.log(`Successfully handled configuration=${JSON.stringify(configuration)}`);
-                  } catch (err) {
-                      console.error(`Failed handling configuration=${JSON.stringify(configuration)}, err=${err}`);
-                      errors.push({configuration, err: err.message ?? err});
-                  }
-              }
-              console.log(`Finished with errors=${JSON.stringify(errors)}`);
-              await sendCftResponse(event, context, errors.length === 0 ? 'SUCCESS' : 'FAILED', JSON.stringify(errors));
-          };
-  PutBucketNotificationLambdaPolicy:
-    Type: AWS::IAM::ManagedPolicy
+#プライベートサブネット1c作成
+  PrivateSubnet1C:
+    Type: AWS::EC2::Subnet
     Properties:
-      ManagedPolicyName:
-        Fn::Sub:
-          - CloudGuard-Intelligence-AWS_Lambda_Policy-${UniqueSuffix}
-          - UniqueSuffix:
-              Fn::Select:
-                - 0
-                - Fn::Split:
-                    - '-'
-                    - Fn::Select:
-                        - 2
-                        - Fn::Split:
-                            - /
-                            - Ref: AWS::StackId
-      Roles:
-        - Ref: PutBucketNotificationLambdaRole
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Action:
-              - logs:CreateLogStream
-              - logs:PutLogEvents
-            Resource:
-              Fn::Sub: >-
-                arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${PutBucketNotificationLambda}:*
-          - Effect: Allow
-            Action:
-              - s3:GetBucketNotification
-              - s3:PutBucketNotification
-            Resource:
-              - arn:aws:s3:::aws-cloudtrail-logs-414885923185-b092cf3d
-  PutBucketNotificationLambdaLogGroup:
-    Type: AWS::Logs::LogGroup
+      VpcId: !Ref MyFirstVPC
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: "ap-northeast-1c"
+Tags:
+      - Key: Name
+        Value: CF-privatesubnet-1c
+
+#パブリックサブネット1Aとルートテーブル紐づけ
+  PubSubnet1ARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      LogGroupName:
-        Fn::Sub: /aws/lambda/${PutBucketNotificationLambda}
-  InvokePutBucketNotificationLambda:
-    Type: AWS::CloudFormation::CustomResource
+      SubnetId: !Ref PublicSubnet1A
+      RouteTableId: !Ref PublicRouteTable
+
+#パブリックサブネット1Cとルートテーブル紐づけ
+  PubSubnet1CRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      ServiceToken:
-        Fn::GetAtt:
-          - PutBucketNotificationLambda
-          - Arn
-      AccountId:
-        Ref: AWS::AccountId
-      Region:
-        Ref: AWS::Region
-      Configurations:
-        - Bucket: aws-cloudtrail-logs-414885923185-b092cf3d
-          Prefix: ''
-          TopicArn:
-            Ref: NewSnsTopic0
-    DependsOn:
-      - PutBucketNotificationLambdaLogGroup
-      - PutBucketNotificationLambdaPolicy
-      - NewSnsTopicPolicy0
-  IntelligencePolicy:
-    Type: AWS::IAM::Policy
+      SubnetId: !Ref PublicSubnet1C
+      RouteTableId: !Ref PublicRouteTable
+KENGO KORI19:38
+#インターネットゲートウェイ作成
+  myInternetGateway:
+    Type: "AWS::EC2::InternetGateway"
     Properties:
-      PolicyName:
-        Fn::Sub: CloudGuard-Intelligence-AWS_InlinePolicy-cloudtrail-${AWS::Region}
-      Roles:
-        - CloudGuard-Connect-RW-role
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Sid: IntelligenceRequiredBucketPermissions
-            Action:
-              - s3:GetObject
-            Effect: Allow
-            Resource:
-              - arn:aws:s3:::cspm-s3-cloudtrail-logs-414885923185
-              - arn:aws:s3:::cspm-s3-cloudtrail-logs-414885923185/*
-              - arn:aws:s3:::aws-cloudtrail-logs-414885923185-b092cf3d
-              - arn:aws:s3:::aws-cloudtrail-logs-414885923185-b092cf3d/*
-          - Sid: IntelligenceUsageEnforcementRequiredSnsPermissions
-            Action:
-              - sns:Subscribe
-              - sns:Unsubscribe
-            Effect: Allow
-            Resource:
-              - >-
-                arn:aws:sns:ap-northeast-1:414885923185:CG-Intelligence-Log-Delivery-82171
-              - Ref: NewSnsTopic0
-Outputs: {}
+      Tags:
+      - Key: Name
+        Value: CF-INGW
+
+#インターネットゲートウェイをVPCへアタッチ
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref MyFirstVPC
+      InternetGatewayId: !Ref myInternetGateway
+
+#サブネットグループ作成
+  SubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: Subnetgroup
+      DBSubnetGroupDescription: test
+      SubnetIds:
+        - !Ref PrivateSubnet1A
+        - !Ref PrivateSubnet1C
+      Tags:
+      -
+        Key: Name
+        Value: Subnetgroup
+
+#NACL作成
+  Nacl:
+    Type: AWS::EC2::NetworkAcl
+    Properties:
+      VpcId: !Ref MyFirstVPC
+      Tags:
+      -
+        Key: Name
+        Value: rds_nacl
+#インバウンドアウトバウンド設定
+  InNacl:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref Nacl
+      RuleNumber: 100
+      Protocol: 6
+      PortRange:
+        From: 3306
+        To: 3306
+      RuleAction: allow
+      Egress: false
+      CidrBlock: 0.0.0.0/0
+
+  OutNacl:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref Nacl
+      RuleNumber: 100
+      Protocol: 6
+      PortRange:
+        From: 3306
+        To: 3306
+      RuleAction: allow
+KENGO KORI19:42
+Egress: true
+      CidrBlock: 0.0.0.0/0
+
+#NACLアタッチ
+  ACLAssociation1:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1A
+      NetworkAclId: !Ref Nacl
+
+  ACLAssociation2:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1C
+      NetworkAclId: !Ref Nacl
+
+#----------#
+#EC2構築
+#----------#
+
+#EC2用セキュリティグループの作成
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: connect with ssh,HTTP,HTTPS
+      VpcId: !Ref MyFirstVPC
+      Tags:
+      - Key: Name
+        Value: EC2-secGP
+      SecurityGroupIngress:
+        -
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        -
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+CidrIp: 0.0.0.0/0
+
+#RDS用セキュリティグループの作成
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: connect MySQL
+      VpcId: !Ref MyFirstVPC
+      Tags:
+      - Key: Name
+        Value: RDS-secGP
+      SecurityGroupIngress:
+        -
+          IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          CidrIp: 0.0.0.0/0
+
+#インスタンス1a作成
+  TrabreInstance1:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-030cf0a1edb8636ab
+      InstanceType: t2.micro
+      SubnetId: !Ref PublicSubnet1A
+      BlockDeviceMappings:
+        -
+         DeviceName: /dev/xvda
+         Ebs:
+          VolumeType: gp2
+          VolumeSize: 8
+      Tags:
+      - Key: Name
+        Value: CF-public-1a
+      KeyName: !Ref KeyName
+      SecurityGroupIds:
+        - !GetAtt "InstanceSecurityGroup.GroupId"
+      UserData:
+Fn::Base64: |
+          #!/bin/bash
+          yum update -y
+          amazon-linux-extras install -y lamp-mariadb10.2-php7.2 php7.2
+          yum install -y httpd mariadb-server
+          systemctl start httpd
+          systemctl enable httpd
+          usermod -a -G apache ec2-user
+          chown -R ec2-user:apache /var/www
+          chmod 2775 /var/www
+          find /var/www -type d -exec chmod 2775 {} \;
+          find /var/www -type f -exec chmod 0664 {} \;
+
+echo "<html> <body> <font size="7">インスタンスA </font></body></html>" > /var/www/html/index.html
+          yum install -y mysql
+        
+#インスタンス1c作成
+  TrabreInstance2:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-030cf0a1edb8636ab
+      InstanceType: t2.micro
+      SubnetId: !Ref PublicSubnet1C
+      BlockDeviceMappings:
+        -
+         DeviceName: /dev/xvda
+         Ebs:
+          VolumeType: gp2
+          VolumeSize: 8
+Tags:
+      - Key: Name
+        Value: CF-public-1c
+      KeyName: !Ref KeyName
+      SecurityGroupIds:
+        - !GetAtt "InstanceSecurityGroup.GroupId"
+      UserData: 
+        Fn::Base64: |
+          #!/bin/bash
+          yum update -y
+          amazon-linux-extras install -y lamp-mariadb10.2-php7.2 php7.2
+          yum install -y httpd mariadb-server
+          systemctl start httpd
+          systemctl enable httpd
+          usermod -a -G apache ec2-user
+
+chown -R ec2-user:apache /var/www
+          chmod 2775 /var/www
+          find /var/www -type d -exec chmod 2775 {} \;
+          find /var/www -type f -exec chmod 0664 {} \;
+          echo "<html> <body> <font size="7">インスタンスC </font></body></html>" > /var/www/html/index.html
+          yum install -y mysql
+
+#ロードバランサーの作成
+  InternetELB: 
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: cf-elb
+      Scheme: internet-facing
+Type: application
+      SecurityGroups: 
+        - !Ref InstanceSecurityGroup
+      Subnets: 
+        - !Ref PublicSubnet1A
+        - !Ref PublicSubnet1C
+      IpAddressType: ipv4
+
+#ターゲットグループの作成
+  ELBtargetGP:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties: 
+      Name: ELBtargetGP
+      Port: 80
+      Protocol: HTTP
+Targets: 
+        - Id: !Ref TrabreInstance2
+          Port: 80
+        - Id: !Ref TrabreInstance1
+          Port: 80
+      TargetType: instance
+      VpcId: !Ref MyFirstVPC
+
+#リスナーの設定
+  ELBListenerHTTP:
+   Type: AWS::ElasticLoadBalancingV2::Listener
+   Properties: 
+    DefaultActions: 
+    - TargetGroupArn: !Ref ELBtargetGP
+      Type: forward
+    LoadBalancerArn: !Ref InternetELB
+    Port: 80
+    Protocol: HTTP
+#RDSインスタンスの作成
+  DBInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: DBInstance
+      StorageType: gp2
+      AllocatedStorage: 5
+      DBInstanceClass: db.t2.small
+      Engine: MySQL
+      MasterUsername: admin
+      MasterUserPassword: Password
+      DBName: mydb
+      BackupRetentionPeriod: 0
+      PubliclyAccessible: false
+      DBSubnetGroupName: !Ref SubnetGroup
+      AvailabilityZone: "ap-northeast-1c"
+      VPCSecurityGroups:
+      -
+       !GetAtt "RDSSecurityGroup.GroupId"
+      Tags:
+      -
+        Key: Name
+        Value: myDB
+xcc-cxuh-htf
