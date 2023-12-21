@@ -1,0 +1,394 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Create a policy that enables Intelligence to access logs, it's a mandatory
+  permission for Intelligence to be able to provide enrichment and insights.
+Parameters:
+  IntelligenceSubscriptionEndpoint:
+    Description: >-
+      ARN to a resource in the Intelligence instance AWS AccountId that is the
+      subscription endpoint
+    Type: String
+    Default: arn:aws:sqs:us-east-1:454849721154:sns-validator-CloudTrail-input-queue
+Resources:
+  NewSnsTopic0:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: CG-Intelligence-Log-Delivery-61025
+    DeletionPolicy: Retain
+  NewSnsTopicPolicy0:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - Ref: NewSnsTopic0
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowLogBucketToSendNotifications
+            Effect: Allow
+            Action: sns:Publish
+            Principal:
+              Service:
+                - s3.amazonaws.com
+            Condition:
+              StringEquals:
+                aws:SourceAccount: '414885923185'
+            Resource:
+              Ref: NewSnsTopic0
+          - Sid: AllowOnlyIntelligenceSubscription
+            Effect: Allow
+            Action: sns:Subscribe
+            Principal:
+              Service: sqs.amazonaws.com
+            Condition:
+              ForAnyValue:StringEquals:
+                sns:Endpoint:
+                  - >-
+                    arn:aws:sqs:us-east-1:454849721154:sns-validator-CloudTrail-input-queue
+                  - >-
+                    arn:aws:sqs:us-east-1:454849721154:sns-validator-FlowLogs-input-queue
+                  - >-
+                    arn:aws:sqs:us-east-1:454849721154:sns-validator-GuardDuty-input-queue
+              StringEquals:
+                sns:Protocol: sqs
+            Resource:
+              Ref: NewSnsTopic0
+    DeletionPolicy: Retain
+  NewSnsTopicSubscription0:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint:
+        Ref: IntelligenceSubscriptionEndpoint
+      Protocol: sqs
+      TopicArn:
+        Ref: NewSnsTopic0
+    DependsOn:
+      - NewSnsTopicPolicy0
+  PutBucketNotificationLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName:
+        Fn::Sub:
+          - CloudGuard-Intelligence-AWS_Lambda_Role-${UniqueSuffix}
+          - UniqueSuffix:
+              Fn::Select:
+                - 0
+                - Fn::Split:
+                    - '-'
+                    - Fn::Select:
+                        - 2
+                        - Fn::Split:
+                            - /
+                            - Ref: AWS::StackId
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+  PutBucketNotificationLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName:
+        Fn::Sub:
+          - CloudGuard-Intelligence-AWS_Lambda-${UniqueSuffix}
+          - UniqueSuffix:
+              Fn::Select:
+                - 0
+                - Fn::Split:
+                    - '-'
+                    - Fn::Select:
+                        - 2
+                        - Fn::Split:
+                            - /
+                            - Ref: AWS::StackId
+      Handler: index.handler
+      Role:
+        Fn::GetAtt:
+          - PutBucketNotificationLambdaRole
+          - Arn
+      Runtime: nodejs14.x
+      Timeout: 300
+      ReservedConcurrentExecutions: 1
+      Code:
+        ZipFile: >-
+          const AWS = require('aws-sdk');
+
+          const https = require('https');
+
+          const url = require('url');
+
+
+          const getCftResponseBody = (event, context, responseStatus,
+          reasonDetails) => {
+              return JSON.stringify({
+                  Status: responseStatus,
+                  Reason: reasonDetails,
+                  PhysicalResourceId: context.logStreamName,
+                  StackId: event.StackId,
+                  RequestId: event.RequestId,
+                  LogicalResourceId: event.LogicalResourceId
+              });
+          };
+
+
+
+          const getCftResponseOptions = (responseUrl, contentLength) => {
+              const parsedUrl = new url.URL(responseUrl);
+              return {
+                  hostname: parsedUrl.hostname,
+                  port: 443,
+                  path: parsedUrl.pathname + parsedUrl.search,
+                  method: 'PUT',
+                  headers: {
+                      'content-type': '',
+                      'content-length': contentLength
+                  }
+              };
+          };
+
+
+
+          const sendCftResponse = async (event, context, responseStatus,
+          reasonDetails = '') => {
+              return new Promise((resolve, reject) => {
+
+                  const responseBody = getCftResponseBody(event, context, responseStatus, reasonDetails);
+                  const options = getCftResponseOptions(event.ResponseURL, responseBody.length);
+
+                  console.log(`Sending response to Cloudformation. options=${JSON.stringify(options)}, responseBody=${responseBody}`);
+
+                  const req = https.request(options, res => {
+                      console.log(`Status Code: ${res.statusCode}`);
+                      console.log(`Status Message: ${res.statusMessage}`);
+                      context.done();
+                  });
+                  req.on('error', error => {
+                      console.error(`Error caught while trying to send response to CloudFormation. Error=${error}`);
+                      context.done();
+                  });
+                  req.write(responseBody);
+                  req.end();
+              });
+          };
+
+
+
+          const parseRegex = (prefixValue, regex) => {
+              const result = prefixValue.split(regex);
+              if (result.length === 3) {
+                  return result[1];
+              }
+              return false;
+          };
+
+
+
+          const generateEventNotificationId = (prefixValue) => {
+              const currentTimeStamp = new Date().getTime();
+              if (prefixValue === '') {
+                  return `CloudGuard_Intelligence_${currentTimeStamp}`;
+              }
+
+              const cloudtrailRegex = /AWSLogs\/(.*?)\/CloudTrail/;
+              const flowlogsRegex = /AWSLogs\/(.*?)\/vpcflowlogs/;
+
+              const accountIdFromCloudTrailRegex = parseRegex(prefixValue, cloudtrailRegex);
+              if (accountIdFromCloudTrailRegex) return `cloudtrail_${accountIdFromCloudTrailRegex}_${currentTimeStamp}`;
+
+              const accountIdFromFlowLogsRegex = parseRegex(prefixValue, flowlogsRegex);
+              if (accountIdFromFlowLogsRegex) return `flowlogs_${accountIdFromFlowLogsRegex}_${currentTimeStamp}`;
+
+              console.warn(`Prefix: ${prefixValue} does not match cloudtrail/flowlogs paths.`);
+              return `${currentTimeStamp}`;
+          };
+
+
+
+          const generateEventNotification = (TopicArn, prefixValue) => {
+              return {
+                  Id: generateEventNotificationId(prefixValue),
+                  TopicArn,
+                  Events: ['s3:ObjectCreated:Put'],
+                  Filter: {
+                      Key: {
+                          FilterRules: [
+                              {
+                                  Name: 'prefix',
+                                  Value: prefixValue
+                              }
+                          ]
+                      }
+                  }
+              };
+          };
+
+
+
+          const isNotificationFilterRelevant = (filterRule, prefixValue) => {
+              return filterRule.Name.toLowerCase() === 'prefix' && (filterRule.Value.startsWith(prefixValue) || prefixValue.startsWith(filterRule.Value));
+          };
+
+
+
+          const doestNotificationAlreadyExist = (topicConfigurations, TopicArn,
+          prefixValue) => {
+              return topicConfigurations.some((configuration) => {
+                  const isRelevantEventTypes = configuration.Events.some(event => event === 's3:ObjectCreated:*' || event === 's3:ObjectCreated:Put');
+                  if (!isRelevantEventTypes) {
+                      return false;
+                  }
+                  const prefixMatch = configuration.Filter.Key.FilterRules.some(filterRule => isNotificationFilterRelevant(filterRule, prefixValue));
+                  if (!prefixMatch) {
+                      return false;
+                  }
+                  if (configuration.TopicArn !== TopicArn) {
+                      console.warn('Required notification prefix is occupied, PutBucketNotificationConfiguration will fail.');
+                      return true;
+                  }
+                  return true;
+              });
+          };
+
+
+
+          const getPutBucketNotificationsRequest = (Bucket, ExpectedBucketOwner,
+          resp, newNotification) => {
+              return {
+                  Bucket,
+                  ExpectedBucketOwner,
+                  NotificationConfiguration: {
+                      TopicConfigurations: [...resp.TopicConfigurations, newNotification],
+                      QueueConfigurations: resp.QueueConfigurations,
+                      LambdaFunctionConfigurations: resp.LambdaFunctionConfigurations
+                  }
+              };
+          };
+
+
+
+          const addPutEventNotification = async (S3, ExpectedBucketOwner,
+          Bucket, prefixValue, TopicArn) => {
+              const resp = await S3.getBucketNotificationConfiguration({ Bucket, ExpectedBucketOwner }).promise();
+              if (doestNotificationAlreadyExist(resp.TopicConfigurations, TopicArn, prefixValue)) {
+                  console.warn('Notification already exists');
+                  return;
+              }
+              const newNotification = generateEventNotification(TopicArn, prefixValue);
+              const params = getPutBucketNotificationsRequest(Bucket, ExpectedBucketOwner, resp, newNotification);
+              await S3.putBucketNotificationConfiguration(params).promise();
+          };
+
+
+
+          exports.handler = async function (event, context) {
+              console.log(`Started with event=${JSON.stringify(event)}`);
+
+              if (event.RequestType === 'Delete') {
+                  await sendCftResponse(event, context, 'SUCCESS');
+                  return;
+              }
+
+              let errors = [];
+              const S3 = new AWS.S3({apiVersion: '2006-03-01', region: event.ResourceProperties.Region});
+              for (const configuration of event.ResourceProperties.Configurations) {
+                  try {
+                      await addPutEventNotification(S3, event.ResourceProperties.AccountId, configuration.Bucket, configuration.Prefix, configuration.TopicArn);
+                      console.log(`Successfully handled configuration=${JSON.stringify(configuration)}`);
+                  } catch (err) {
+                      console.error(`Failed handling configuration=${JSON.stringify(configuration)}, err=${err}`);
+                      errors.push({configuration, err: err.message ?? err});
+                  }
+              }
+              console.log(`Finished with errors=${JSON.stringify(errors)}`);
+              await sendCftResponse(event, context, errors.length === 0 ? 'SUCCESS' : 'FAILED', JSON.stringify(errors));
+          };
+  PutBucketNotificationLambdaPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName:
+        Fn::Sub:
+          - CloudGuard-Intelligence-AWS_Lambda_Policy-${UniqueSuffix}
+          - UniqueSuffix:
+              Fn::Select:
+                - 0
+                - Fn::Split:
+                    - '-'
+                    - Fn::Select:
+                        - 2
+                        - Fn::Split:
+                            - /
+                            - Ref: AWS::StackId
+      Roles:
+        - Ref: PutBucketNotificationLambdaRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              Fn::Sub: >-
+                arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${PutBucketNotificationLambda}:*
+          - Effect: Allow
+            Action:
+              - s3:GetBucketNotification
+              - s3:PutBucketNotification
+            Resource:
+              - arn:aws:s3:::aws-cloudtrail-logs-414885923185-b092cf3d
+  PutBucketNotificationLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName:
+        Fn::Sub: /aws/lambda/${PutBucketNotificationLambda}
+  InvokePutBucketNotificationLambda:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken:
+        Fn::GetAtt:
+          - PutBucketNotificationLambda
+          - Arn
+      AccountId:
+        Ref: AWS::AccountId
+      Region:
+        Ref: AWS::Region
+      Configurations:
+        - Bucket: aws-cloudtrail-logs-414885923185-b092cf3d
+          Prefix: ''
+          TopicArn:
+            Ref: NewSnsTopic0
+    DependsOn:
+      - PutBucketNotificationLambdaLogGroup
+      - PutBucketNotificationLambdaPolicy
+      - NewSnsTopicPolicy0
+  IntelligencePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName:
+        Fn::Sub: CloudGuard-Intelligence-AWS_InlinePolicy-cloudtrail-${AWS::Region}
+      Roles:
+        - CloudGuard-Connect-RW-role
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: IntelligenceRequiredBucketPermissions
+            Action:
+              - s3:GetObject
+            Effect: Allow
+            Resource:
+              - arn:aws:s3:::cspm-s3-cloudtrail-logs-414885923185
+              - arn:aws:s3:::cspm-s3-cloudtrail-logs-414885923185/*
+              - arn:aws:s3:::aws-cloudtrail-logs-414885923185-b092cf3d
+              - arn:aws:s3:::aws-cloudtrail-logs-414885923185-b092cf3d/*
+          - Sid: IntelligenceUsageEnforcementRequiredSnsPermissions
+            Action:
+              - sns:Subscribe
+              - sns:Unsubscribe
+            Effect: Allow
+            Resource:
+              - >-
+                arn:aws:sns:ap-northeast-1:414885923185:CG-Intelligence-Log-Delivery-82171
+              - Ref: NewSnsTopic0
+Outputs: {}
